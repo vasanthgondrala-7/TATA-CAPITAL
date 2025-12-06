@@ -7,6 +7,7 @@ import { TypingIndicator } from "./TypingIndicator";
 import { QuickActions } from "./QuickActions";
 import { AgentOrchestrator } from "./AgentOrchestrator";
 import { SanctionLetter } from "./SanctionLetter";
+import { FileUploadSimulator } from "./FileUploadSimulator";
 import { useChatBot } from "@/hooks/useChatBot";
 import { Customer } from "@/data/customers";
 import { LoanApplication, AgentType, ConversationStage } from "@/types/chat";
@@ -41,7 +42,8 @@ export const ChatInterface = () => {
     customer,
     loanApplication,
     processUserInput,
-    startConversation
+    startConversation,
+    handleFileUpload
   } = useChatBot();
 
   useEffect(() => {
@@ -84,6 +86,17 @@ export const ChatInterface = () => {
           
           {isTyping && <TypingIndicator agent={currentAgent} />}
           
+          {/* File Upload for Salary Slip */}
+          {stage === 'salary_slip_request' && !isTyping && (
+            <div className="max-w-md ml-12 animate-fade-in">
+              <FileUploadSimulator 
+                onUploadComplete={handleFileUpload}
+                label="Upload Salary Slip"
+                accept=".pdf,.jpg,.jpeg,.png"
+              />
+            </div>
+          )}
+          
           {/* Sanction Letter */}
           {stage === 'sanction_letter' && customer && loanApplication && (
             <div className="mt-4">
@@ -92,7 +105,7 @@ export const ChatInterface = () => {
           )}
           
           {/* Quick Actions */}
-          {!isTyping && stage !== 'sanction_letter' && stage !== 'rejected' && stage !== 'completed' && (
+          {!isTyping && stage !== 'sanction_letter' && stage !== 'rejected' && stage !== 'completed' && stage !== 'salary_slip_request' && (
             <QuickActions stage={stage} onAction={handleQuickAction} />
           )}
           
