@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Message, AgentType, ConversationStage, LoanApplication } from '@/types/chat';
 import { Customer, customers, getCustomerByPhone } from '@/data/customers';
+import { OfferMartAPI, CRMAPI, CreditBureauAPI, DocumentVerificationAPI } from '@/services/mockApis';
 
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
@@ -8,6 +9,35 @@ const calculateEMI = (principal: number, rate: number, months: number): number =
   const monthlyRate = rate / 12 / 100;
   const emi = principal * monthlyRate * Math.pow(1 + monthlyRate, months) / (Math.pow(1 + monthlyRate, months) - 1);
   return Math.round(emi);
+};
+
+// Persuasive responses library
+const salesPhrases = {
+  greeting: [
+    "I noticed you have an excellent pre-approved offer waiting! This is one of our best rates this quarter.",
+    "Great timing! We're running a special promotion with reduced processing fees.",
+    "I've been looking at your profile, and I must say - you qualify for our premium customer benefits!"
+  ],
+  urgency: [
+    "This special rate is only valid for the next 7 days.",
+    "I can lock in this rate for you right now, before the next rate revision.",
+    "Many customers with similar profiles are already enjoying these benefits."
+  ],
+  reassurance: [
+    "Thousands of customers trust us with their financial needs every day.",
+    "Our loan process is completely paperless and hassle-free.",
+    "You can prepay anytime without any charges - complete flexibility!"
+  ],
+  negotiation: [
+    "I really want to help you get the best deal. Let me check what I can do...",
+    "Since you're a valued customer, I have some flexibility here.",
+    "I don't usually do this, but let me offer you something special."
+  ]
+};
+
+const getRandomPhrase = (category: keyof typeof salesPhrases) => {
+  const phrases = salesPhrases[category];
+  return phrases[Math.floor(Math.random() * phrases.length)];
 };
 
 export const useChatBot = () => {
@@ -18,6 +48,7 @@ export const useChatBot = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [loanApplication, setLoanApplication] = useState<LoanApplication | null>(null);
+  const [orchestrationLog, setOrchestrationLog] = useState<string[]>([]);
 
   const addMessage = useCallback((content: string, sender: 'user' | 'agent', agent?: AgentType, metadata?: Message['metadata']) => {
     const message: Message = {
@@ -32,16 +63,51 @@ export const useChatBot = () => {
     return message;
   }, []);
 
-  const switchAgent = useCallback((agent: AgentType) => {
+  const logOrchestration = useCallback((log: string) => {
+    setOrchestrationLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${log}`]);
+    console.log(`🤖 Orchestration: ${log}`);
+  }, []);
+
+  const switchAgent = useCallback((agent: AgentType, reason: string) => {
+    logOrchestration(`Master Agent → Switching to ${agent.toUpperCase()} Agent. Reason: ${reason}`);
     setCurrentAgent(agent);
     setVisitedAgents(prev => prev.includes(agent) ? prev : [...prev, agent]);
-  }, []);
+  }, [logOrchestration]);
 
   const simulateTyping = useCallback(async (duration: number = 1500) => {
     setIsTyping(true);
     await new Promise(resolve => setTimeout(resolve, duration));
     setIsTyping(false);
   }, []);
+
+  const handleFileUpload = useCallback(async (file: File) => {
+    if (!customer || !loanApplication) return;
+
+    logOrchestration('Document received. Initiating verification...');
+    addMessage(`📎 Uploaded: ${file.name}`, 'user');
+    
+    await simulateTyping(2000);
+
+    const result = await DocumentVerificationAPI.verifySalarySlip(customer.id, file);
+    
+    addMessage(
+      `📄 **Salary Slip Verification Complete**\n\n` +
+      `✓ Document Type: Salary Slip\n` +
+      `✓ Employer: ${result.extractedData.employerName}\n` +
+      `✓ Gross Salary: ₹${result.extractedData.grossSalary.toLocaleString()}\n` +
+      `✓ Net Salary: ₹${result.extractedData.netSalary.toLocaleString()}\n` +
+      `✓ Month: ${result.extractedData.month} ${result.extractedData.year}\n` +
+      `✓ Confidence: ${Math.round(result.confidence * 100)}%\n\n` +
+      `Document verified successfully! ✅`,
+      'agent',
+      'verification'
+    );
+
+    setLoanApplication(prev => prev ? { ...prev, salarySlipUploaded: true } : null);
+    
+    await simulateTyping(1000);
+    handleUnderwritingDecision(true);
+  }, [customer, loanApplication]);
 
   const processUserInput = useCallback(async (input: string) => {
     addMessage(input, 'user');
@@ -50,20 +116,27 @@ export const useChatBot = () => {
 
     switch (stage) {
       case 'greeting': {
+        logOrchestration('User initiated conversation. Master Agent analyzing intent...');
+        
         if (input.toLowerCase().includes('loan') || input === 'interested_loan' || input === 'know_offers') {
           // Pick a random customer for demo
           const randomCustomer = customers[Math.floor(Math.random() * customers.length)];
           setCustomer(randomCustomer);
           
+          logOrchestration(`Customer identified: ${randomCustomer.name} (${randomCustomer.id}). Verifying identity...`);
+          
           addMessage(
-            `Welcome to Tata Capital! I'm your personal loan advisor.\n\nI see you're calling from a registered number. Let me verify - are you ${randomCustomer.name} from ${randomCustomer.city}?`,
+            `Welcome to Tata Capital! I'm your personal loan advisor, and I'm thrilled to assist you today.\n\n` +
+            `I see you're calling from a registered number. Just to confirm - am I speaking with **${randomCustomer.name}** from **${randomCustomer.city}**?`,
             'agent',
             'master'
           );
           setStage('identification');
         } else {
           addMessage(
-            "Hello! I'm your Tata Capital loan advisor. I can help you with personal loans with attractive interest rates. Would you like to know about our loan offers?",
+            "Hello! 👋 I'm your Tata Capital loan advisor. I specialize in helping customers like you find the perfect personal loan solution.\n\n" +
+            "Whether it's for home renovation, a dream vacation, wedding expenses, or any personal need - I'm here to help!\n\n" +
+            "Would you like to explore our exclusive loan offers?",
             'agent',
             'master'
           );
@@ -72,27 +145,50 @@ export const useChatBot = () => {
       }
 
       case 'identification': {
-        if (input === 'confirm_identity' || input.toLowerCase().includes('yes')) {
-          switchAgent('sales');
+        if (input === 'confirm_identity' || input.toLowerCase().includes('yes') || input.toLowerCase().includes('correct')) {
+          logOrchestration(`Identity confirmed. Triggering Sales Agent for needs assessment.`);
+          switchAgent('sales', 'Customer identity verified, proceeding to sales consultation');
           await simulateTyping(800);
           
+          // Fetch pre-approved offers
+          const offers = await OfferMartAPI.getPreApprovedOffers(customer!.id);
+          
           addMessage(
-            `Great, ${customer?.name}! I'm now connecting you with our Sales specialist who will understand your needs and present the best offers for you.`,
+            `Excellent! Great to have you with us, ${customer?.name}! I'm now connecting you with our specialist.\n\n` +
+            `*Transferring to Sales Agent...*`,
             'agent',
             'master'
           );
           
           await simulateTyping(1200);
           
-          addMessage(
-            `Hi ${customer?.name}! I'm your dedicated Sales Agent. I see you have a pre-approved personal loan limit of ₹${customer?.preApprovedLimit.toLocaleString()}.\n\nMay I know the purpose of this loan? This helps me customize the best offer for you.`,
-            'agent',
-            'sales'
-          );
+          let offerMessage = `Hi ${customer?.name}! 🎉 I'm your dedicated Sales Agent, and I have some exciting news!\n\n`;
+          offerMessage += `Based on your excellent profile, you have a **pre-approved personal loan** of up to **₹${customer?.preApprovedLimit.toLocaleString()}**!\n\n`;
+          
+          if (offers?.specialOffers && offers.specialOffers.length > 0) {
+            offerMessage += `🌟 **Special Benefits for You:**\n`;
+            offers.specialOffers.forEach(offer => {
+              offerMessage += `• ${offer}\n`;
+            });
+            offerMessage += '\n';
+          }
+          
+          offerMessage += getRandomPhrase('greeting') + '\n\n';
+          offerMessage += `Now, to customize the perfect offer for you - may I know what you'd like to use this loan for?`;
+          
+          addMessage(offerMessage, 'agent', 'sales');
           setStage('needs_assessment');
+        } else if (input === 'wrong_identity' || input.toLowerCase().includes('no') || input.toLowerCase().includes('not me')) {
+          logOrchestration('Identity mismatch. Requesting manual verification.');
+          addMessage(
+            "I apologize for the confusion! No worries, let me help you.\n\n" +
+            "Could you please share your registered mobile number? I'll quickly pull up your details.",
+            'agent',
+            'master'
+          );
         } else {
           addMessage(
-            "I apologize for the confusion. Could you please share your registered phone number so I can verify your details?",
+            "I didn't quite catch that. Could you please confirm - are you the account holder I mentioned? Just say 'yes' or 'no'.",
             'agent',
             'master'
           );
@@ -101,6 +197,8 @@ export const useChatBot = () => {
       }
 
       case 'needs_assessment': {
+        logOrchestration('Analyzing loan purpose and preparing customized offer...');
+        
         const purposes: Record<string, string> = {
           'purpose_renovation': 'home renovation',
           'purpose_medical': 'medical expenses',
@@ -110,7 +208,9 @@ export const useChatBot = () => {
         
         const purpose = purposes[input] || input;
         
-        const baseRate = 10.5;
+        // Fetch dynamic rate from Offer Mart
+        const offers = await OfferMartAPI.getPreApprovedOffers(customer!.id);
+        const baseRate = offers?.minRate || 10.5;
         const amount = customer?.preApprovedLimit || 300000;
         const tenure = 36;
         const emi = calculateEMI(amount, baseRate, tenure);
@@ -127,8 +227,11 @@ export const useChatBot = () => {
           salarySlipUploaded: false
         });
 
+        logOrchestration(`Offer generated: ₹${amount.toLocaleString()} @ ${baseRate}% for ${tenure} months`);
+
         addMessage(
-          `Excellent choice! ${purpose.charAt(0).toUpperCase() + purpose.slice(1)} is a great reason.\n\nBased on your profile, here's my special offer for you:`,
+          `**${purpose.charAt(0).toUpperCase() + purpose.slice(1)}** - that's a wonderful reason! 🎯\n\n` +
+          `I've crafted a special offer just for you. Here's what I can do:`,
           'agent',
           'sales',
           {
@@ -139,9 +242,12 @@ export const useChatBot = () => {
           }
         );
 
-        await simulateTyping(500);
+        await simulateTyping(800);
+        
         addMessage(
-          "This is one of the best rates we offer! Would you like to proceed with this, or would you like to discuss the terms?",
+          `${getRandomPhrase('urgency')}\n\n` +
+          `${getRandomPhrase('reassurance')}\n\n` +
+          `What do you think? Would you like to proceed with this offer, or would you like to explore different options?`,
           'agent',
           'sales'
         );
@@ -151,40 +257,61 @@ export const useChatBot = () => {
       }
 
       case 'offer_presentation': {
-        if (input === 'accept_offer' || input.toLowerCase().includes('take')) {
-          switchAgent('verification');
+        if (input === 'accept_offer' || input.toLowerCase().includes('proceed') || input.toLowerCase().includes('take') || input.toLowerCase().includes('yes')) {
+          logOrchestration('Offer accepted. Triggering Verification Agent for KYC check.');
+          switchAgent('verification', 'Customer accepted offer, KYC verification required');
           await simulateTyping(800);
           
           addMessage(
-            "Wonderful! Let me hand you over to our Verification team for a quick KYC check.",
+            "Wonderful choice! 🎉 You're making a great decision.\n\n" +
+            "Let me hand you over to our Verification team for a quick, paperless KYC check. It'll only take a moment!",
             'agent',
             'sales'
           );
           
           await simulateTyping(1500);
           
-          addMessage(
-            `Hello ${customer?.name}! I'm the Verification Agent. I'm now verifying your KYC details from our CRM system...\n\n✓ Name: ${customer?.name}\n✓ Phone: ${customer?.phone}\n✓ City: ${customer?.city}\n✓ Employer: ${customer?.employerName}\n\nKYC verification successful! ✅`,
-            'agent',
-            'verification'
-          );
+          // Fetch KYC from CRM
+          logOrchestration('Fetching KYC data from CRM server...');
+          const kycResult = await CRMAPI.verifyKYC(customer!.id);
           
-          if (loanApplication) {
-            setLoanApplication({ ...loanApplication, kycVerified: true, status: 'verified' });
+          let kycMessage = `Hello ${customer?.name}! I'm the Verification Agent.\n\n`;
+          kycMessage += `🔍 **Running KYC Verification...**\n\n`;
+          
+          kycResult.checks.forEach(check => {
+            const icon = check.status === 'pass' ? '✅' : check.status === 'pending' ? '⏳' : '❌';
+            kycMessage += `${icon} ${check.name}\n`;
+          });
+          
+          kycMessage += `\n${kycResult.message}`;
+          
+          addMessage(kycMessage, 'agent', 'verification');
+          
+          if (kycResult.success) {
+            if (loanApplication) {
+              setLoanApplication({ ...loanApplication, kycVerified: true, status: 'verified' });
+            }
+            setStage('verification');
+            await simulateTyping(1000);
+            handleVerificationComplete();
+          } else {
+            addMessage(
+              "Some verification checks are pending. Please upload additional documents or visit our nearest branch.",
+              'agent',
+              'verification'
+            );
           }
+        } else if (input === 'negotiate_rate' || input.toLowerCase().includes('better rate') || input.toLowerCase().includes('discount')) {
+          logOrchestration('Customer requesting rate negotiation. Checking eligibility for special rate.');
           
-          setStage('verification');
-          
-          await simulateTyping(1000);
-          handleVerificationComplete();
-        } else if (input === 'negotiate_rate' || input.toLowerCase().includes('better rate')) {
-          const newRate = (loanApplication?.interestRate || 10.5) - 0.25;
+          const newRate = Math.max(9.25, (loanApplication?.interestRate || 10.5) - 0.5);
           const newEmi = calculateEMI(loanApplication?.requestedAmount || 300000, newRate, loanApplication?.tenure || 36);
           
           setLoanApplication(prev => prev ? { ...prev, interestRate: newRate, emi: newEmi } : null);
           
           addMessage(
-            `I understand you're looking for a better rate. Since you're a valued customer with an excellent profile, I can offer you a special discount:`,
+            `${getRandomPhrase('negotiation')}\n\n` +
+            `Given your excellent credit profile, I'm authorized to offer you an **exclusive discount**!`,
             'agent',
             'sales',
             {
@@ -197,16 +324,39 @@ export const useChatBot = () => {
           
           await simulateTyping(500);
           addMessage(
-            "This is my best offer - an exclusive rate just for you! Shall we proceed?",
+            `This is genuinely my best offer - I've already applied the maximum discount possible. ${getRandomPhrase('urgency')}\n\n` +
+            "Shall we lock this in for you?",
             'agent',
             'sales'
           );
           setStage('negotiation');
-        } else if (input === 'negotiate_amount' || input.toLowerCase().includes('higher amount')) {
-          const newAmount = Math.min((customer?.preApprovedLimit || 300000) * 2, (customer?.monthlyIncome || 50000) * 20);
+        } else if (input === 'negotiate_amount' || input.toLowerCase().includes('higher amount') || input.toLowerCase().includes('more')) {
+          logOrchestration('Customer requesting higher amount. Checking eligibility with Offer Mart...');
+          
+          const eligibility = await OfferMartAPI.checkEligibilityForHigherAmount(
+            customer!.id, 
+            (customer?.preApprovedLimit || 300000) * 2
+          );
           
           addMessage(
-            `I can certainly check for a higher amount! Based on your income, you may be eligible for up to ₹${newAmount.toLocaleString()}, but this would require additional documentation like a salary slip.\n\nWould you like to proceed with the higher amount, or stick with the pre-approved ₹${customer?.preApprovedLimit.toLocaleString()}?`,
+            `I absolutely understand - you want to maximize your loan potential! Let me check what's possible...\n\n` +
+            `Based on your income and profile, you could be eligible for up to **₹${eligibility.maxAmount.toLocaleString()}**! 💰\n\n` +
+            (eligibility.requiresDocuments ? 
+              `However, for amounts above your pre-approved limit, I'll need:\n${eligibility.documents.map(d => `• ${d}`).join('\n')}\n\n` +
+              `Would you like to proceed with the higher amount (requires documents) or stick with the instant pre-approved ₹${customer?.preApprovedLimit.toLocaleString()}?` :
+              `Great news - this is within your pre-approved limit! Shall I update your offer?`
+            ),
+            'agent',
+            'sales'
+          );
+        } else if (input.toLowerCase().includes('not interested') || input.toLowerCase().includes('cancel') || input.toLowerCase().includes('later')) {
+          logOrchestration('Customer showing hesitation. Applying retention strategy.');
+          
+          addMessage(
+            `I completely understand! Taking time to think is always wise. 🤔\n\n` +
+            `But before you go, let me share something - this pre-approved offer is based on your current excellent profile. ` +
+            `If you apply later, you might need to go through a fresh credit check, and rates could be different.\n\n` +
+            `The offer is valid for 7 days. Can I answer any questions or concerns you might have?`,
             'agent',
             'sales'
           );
@@ -215,23 +365,30 @@ export const useChatBot = () => {
       }
 
       case 'negotiation': {
-        if (input === 'accept_final_offer' || input.toLowerCase().includes('accept')) {
-          switchAgent('verification');
+        if (input === 'accept_final_offer' || input.toLowerCase().includes('accept') || input.toLowerCase().includes('proceed') || input.toLowerCase().includes('yes')) {
+          logOrchestration('Final offer accepted. Initiating verification process.');
+          switchAgent('verification', 'Negotiated offer accepted, proceeding to KYC');
           await simulateTyping(800);
           
           addMessage(
-            "Excellent decision! Transferring you to our Verification team now.",
+            "Excellent decision! 🎊 I'm so glad we could work this out.\n\n" +
+            "Transferring you to verification now - this will be quick and completely paperless!",
             'agent',
             'sales'
           );
           
           await simulateTyping(1500);
           
-          addMessage(
-            `Hello ${customer?.name}! Quick KYC verification in progress...\n\n✓ Identity Verified\n✓ Address Confirmed\n✓ Employment Verified\n\nAll checks passed! ✅`,
-            'agent',
-            'verification'
-          );
+          const kycResult = await CRMAPI.verifyKYC(customer!.id);
+          
+          let kycMessage = `Hello again, ${customer?.name}! Quick verification in progress...\n\n`;
+          kycResult.checks.forEach(check => {
+            const icon = check.status === 'pass' ? '✅' : '⏳';
+            kycMessage += `${icon} ${check.name}\n`;
+          });
+          kycMessage += `\n🎉 All checks passed! You're verified.`;
+          
+          addMessage(kycMessage, 'agent', 'verification');
           
           if (loanApplication) {
             setLoanApplication({ ...loanApplication, kycVerified: true, status: 'verified' });
@@ -242,7 +399,8 @@ export const useChatBot = () => {
           handleVerificationComplete();
         } else {
           addMessage(
-            "No problem! Take your time. The offer is valid for 7 days. Is there anything else you'd like to know about the loan?",
+            "No pressure at all! 😊 This offer will remain valid for 7 days.\n\n" +
+            "Is there anything specific you'd like to know more about? I'm here to help with any questions.",
             'agent',
             'sales'
           );
@@ -252,55 +410,80 @@ export const useChatBot = () => {
 
       case 'salary_slip_request': {
         if (input === 'upload_salary_slip' || input.toLowerCase().includes('upload')) {
-          await simulateTyping(2000);
-          
           addMessage(
-            "📄 Salary slip received and verified!\n\nMonthly Salary: ₹" + customer?.monthlyIncome.toLocaleString() + "\nEmployer: " + customer?.employerName + "\n\nDocument verification complete. ✅",
+            "Please use the upload section below to submit your salary slip. You can drag & drop or click to browse.",
             'agent',
             'verification'
           );
-          
-          if (loanApplication) {
-            setLoanApplication({ ...loanApplication, salarySlipUploaded: true });
-          }
-          
-          await simulateTyping(1000);
-          handleUnderwritingDecision(true);
+          // File upload UI will be shown
         }
         break;
       }
 
       default:
         addMessage(
-          "I'm here to help! Would you like to know more about our personal loan offers?",
+          "I'm here to help! Would you like to explore our personal loan offers? I can find you the best rates based on your profile.",
           'agent',
           'master'
         );
     }
-  }, [stage, customer, loanApplication, addMessage, simulateTyping, switchAgent]);
+  }, [stage, customer, loanApplication, addMessage, simulateTyping, switchAgent, logOrchestration]);
 
   const handleVerificationComplete = useCallback(async () => {
-    switchAgent('underwriting');
+    logOrchestration('KYC verified. Triggering Underwriting Agent for credit assessment.');
+    switchAgent('underwriting', 'KYC complete, credit scoring and eligibility check required');
     await simulateTyping(1500);
     
-    const creditScore = customer?.creditScore || 700;
+    // Fetch credit report from bureau
+    logOrchestration('Fetching credit report from Credit Bureau API...');
+    const creditReport = await CreditBureauAPI.fetchCreditScore(customer!.id);
+    
+    if (!creditReport) {
+      addMessage(
+        "Unable to fetch credit report. Please try again later.",
+        'agent',
+        'underwriting'
+      );
+      return;
+    }
+
     const preApprovedLimit = customer?.preApprovedLimit || 300000;
     const requestedAmount = loanApplication?.requestedAmount || 300000;
     
-    addMessage(
-      `I'm the Underwriting Agent. Fetching your credit score from the bureau...\n\n📊 Credit Score: ${creditScore}/900`,
-      'agent',
-      'underwriting',
-      { creditScore }
-    );
+    let underwritingMessage = `I'm the Underwriting Agent. Let me assess your loan application.\n\n`;
+    underwritingMessage += `📊 **Credit Bureau Report**\n\n`;
+    underwritingMessage += `• Credit Score: **${creditReport.creditScore}/900** (${creditReport.scoreCategory.toUpperCase()})\n`;
+    underwritingMessage += `• Active Loans: ${creditReport.activeLoans}\n`;
+    underwritingMessage += `• Payment History: ${creditReport.paymentHistory}\n`;
+    underwritingMessage += `• Credit Utilization: ${creditReport.creditUtilization}%\n`;
+    
+    if (creditReport.recommendations.length > 0) {
+      underwritingMessage += `\n💡 **Recommendations:**\n`;
+      creditReport.recommendations.forEach(rec => {
+        underwritingMessage += `• ${rec}\n`;
+      });
+    }
+    
+    addMessage(underwritingMessage, 'agent', 'underwriting', { creditScore: creditReport.creditScore });
     
     await simulateTyping(1500);
     
-    // Decision logic
-    if (creditScore < 700) {
-      // Reject if credit score < 700
+    logOrchestration(`Credit score: ${creditReport.creditScore}. Evaluating eligibility criteria...`);
+    
+    // Decision logic with edge cases
+    if (creditReport.creditScore < 650) {
+      // EDGE CASE: Low credit score - REJECTION
+      logOrchestration('DECISION: Loan REJECTED due to low credit score (<650)');
+      
       addMessage(
-        `I regret to inform you that based on the credit score of ${creditScore}, we are unable to approve this loan at this time.\n\nWe recommend improving your credit score and reapplying after 6 months. Tips:\n• Pay existing EMIs on time\n• Reduce credit card utilization\n• Avoid multiple loan applications`,
+        `❌ **Application Status: Not Approved**\n\n` +
+        `I regret to inform you that based on your current credit score of ${creditReport.creditScore}, we're unable to approve this loan application at this time.\n\n` +
+        `**What you can do:**\n` +
+        `• Pay all existing EMIs on time for the next 6 months\n` +
+        `• Keep credit card utilization below 30%\n` +
+        `• Avoid applying for multiple loans\n` +
+        `• Check your credit report for any errors\n\n` +
+        `We encourage you to reapply after 6 months. Your pre-approved offer will be reassessed at that time.`,
         'agent',
         'underwriting'
       );
@@ -309,19 +492,71 @@ export const useChatBot = () => {
         setLoanApplication({ ...loanApplication, status: 'rejected' });
       }
       setStage('rejected');
-    } else if (requestedAmount <= preApprovedLimit) {
-      // Instant approval if within pre-approved limit
-      handleUnderwritingDecision(true);
-    } else if (requestedAmount <= preApprovedLimit * 2) {
-      // Request salary slip if amount is 1x-2x pre-approved
-      const currentEmi = loanApplication?.emi || 0;
-      const existingEmis = customer?.currentLoans.reduce((sum, loan) => sum + loan.emi, 0) || 0;
-      const totalEmi = currentEmi + existingEmis;
-      const maxAllowedEmi = (customer?.monthlyIncome || 50000) * 0.5;
       
-      if (totalEmi <= maxAllowedEmi) {
+    } else if (creditReport.creditScore >= 650 && creditReport.creditScore < 700) {
+      // EDGE CASE: Marginal credit score - Conditional approval with higher rate
+      logOrchestration('DECISION: Conditional approval with adjusted rate (score 650-700)');
+      
+      const adjustedRate = (loanApplication?.interestRate || 10.5) + 1.5;
+      const adjustedAmount = Math.round(preApprovedLimit * 0.7);
+      const adjustedEmi = calculateEMI(adjustedAmount, adjustedRate, loanApplication?.tenure || 36);
+      
+      addMessage(
+        `⚠️ **Conditional Approval**\n\n` +
+        `Your credit score falls in the "fair" range. Based on our risk assessment, I can offer you a modified loan:\n\n` +
+        `• **Approved Amount:** ₹${adjustedAmount.toLocaleString()} (reduced from ₹${preApprovedLimit.toLocaleString()})\n` +
+        `• **Interest Rate:** ${adjustedRate}% (risk-adjusted)\n` +
+        `• **EMI:** ₹${adjustedEmi.toLocaleString()}\n\n` +
+        `Alternatively, if you can provide a **guarantor** or **collateral**, we could reconsider the original amount.\n\n` +
+        `Would you like to proceed with the modified offer, or explore the guarantor option?`,
+        'agent',
+        'underwriting',
+        {
+          loanAmount: adjustedAmount,
+          interestRate: adjustedRate,
+          emi: adjustedEmi
+        }
+      );
+      
+      setLoanApplication(prev => prev ? { 
+        ...prev, 
+        requestedAmount: adjustedAmount, 
+        interestRate: adjustedRate, 
+        emi: adjustedEmi,
+        status: 'needs_documents' 
+      } : null);
+      setStage('negotiation');
+      
+    } else if (requestedAmount > preApprovedLimit) {
+      // EDGE CASE: Amount exceeds pre-approved limit - Need salary slip
+      logOrchestration('DECISION: Additional documentation required (amount > pre-approved limit)');
+      
+      const affordability = await CreditBureauAPI.checkEMIAffordability(customer!.id, loanApplication?.emi || 0);
+      
+      if (!affordability.affordable) {
+        // EMI exceeds 50% threshold
+        logOrchestration('DECISION: EMI burden too high. Reducing loan amount.');
+        
+        const maxAffordableAmount = Math.round(affordability.maxAffordableEMI * 36 / 0.01);
+        
         addMessage(
-          `Your requested amount of ₹${requestedAmount.toLocaleString()} exceeds your pre-approved limit. However, based on your excellent credit score, you may be eligible.\n\nI'll need your latest salary slip for verification. Please upload it to proceed.`,
+          `⚠️ **EMI Affordability Check**\n\n` +
+          `The requested loan amount would result in an EMI burden of ${affordability.proposedEMIBurden}% of your income.\n\n` +
+          `Our policy allows a maximum of 50% EMI-to-income ratio.\n\n` +
+          `**Your Current EMI Burden:** ${affordability.currentEMIBurden}%\n` +
+          `**Maximum Additional EMI:** ₹${affordability.maxAffordableEMI.toLocaleString()}\n\n` +
+          `I can approve up to ₹${Math.round(preApprovedLimit * 1.3).toLocaleString()} for you. Would you like to proceed with this revised amount?`,
+          'agent',
+          'underwriting'
+        );
+        setStage('negotiation');
+      } else {
+        addMessage(
+          `📋 **Additional Documentation Required**\n\n` +
+          `Your requested amount of ₹${requestedAmount.toLocaleString()} exceeds your pre-approved limit.\n\n` +
+          `However, based on your excellent credit score of ${creditReport.creditScore}, you may be eligible! 🎯\n\n` +
+          `I'll need your **latest salary slip** to verify your income and complete the assessment.\n\n` +
+          `Please upload your salary slip to proceed.`,
           'agent',
           'underwriting'
         );
@@ -330,22 +565,14 @@ export const useChatBot = () => {
           setLoanApplication({ ...loanApplication, status: 'needs_documents' });
         }
         setStage('salary_slip_request');
-      } else {
-        addMessage(
-          `Based on our calculations, the EMI for this loan amount would exceed 50% of your monthly income, which is our maximum threshold.\n\nI can approve up to ₹${Math.round(preApprovedLimit * 1.5).toLocaleString()} for you. Would you like to proceed with this amount instead?`,
-          'agent',
-          'underwriting'
-        );
       }
-    } else {
-      // Reject if > 2x pre-approved
-      addMessage(
-        `The requested amount of ₹${requestedAmount.toLocaleString()} is more than 2x your pre-approved limit of ₹${preApprovedLimit.toLocaleString()}.\n\nWe can approve up to ₹${(preApprovedLimit * 2).toLocaleString()} with additional documentation. Would you like to revise your loan amount?`,
-        'agent',
-        'underwriting'
-      );
+      
+    } else if (requestedAmount <= preApprovedLimit && creditReport.creditScore >= 700) {
+      // Happy path: Instant approval
+      logOrchestration('DECISION: Loan APPROVED. All criteria met.');
+      handleUnderwritingDecision(true);
     }
-  }, [customer, loanApplication, switchAgent, simulateTyping, addMessage]);
+  }, [customer, loanApplication, switchAgent, simulateTyping, addMessage, logOrchestration]);
 
   const handleUnderwritingDecision = useCallback(async (approved: boolean) => {
     if (approved) {
@@ -353,18 +580,29 @@ export const useChatBot = () => {
         setLoanApplication({ ...loanApplication, status: 'approved' });
       }
       
+      logOrchestration('Loan APPROVED! Triggering Sanction Letter Generator Agent.');
+      
       addMessage(
-        "🎉 Congratulations! Your loan has been APPROVED!\n\nAll eligibility criteria met. Transferring you to generate your sanction letter...",
+        "🎉🎉🎉 **CONGRATULATIONS!** 🎉🎉🎉\n\n" +
+        "Your personal loan has been **APPROVED**!\n\n" +
+        "All eligibility criteria have been met. I'm now transferring you to generate your official Sanction Letter...",
         'agent',
         'underwriting',
         { status: 'approved' }
       );
       
-      switchAgent('sanction');
+      switchAgent('sanction', 'Loan approved, generating sanction letter');
       await simulateTyping(2000);
       
       addMessage(
-        "Your official Sanction Letter is ready! You can download it below. Please visit our nearest branch with original documents for loan disbursement.",
+        "📜 **Your Official Sanction Letter is Ready!**\n\n" +
+        "This document confirms your loan approval and all terms. You can download it below.\n\n" +
+        "**Next Steps:**\n" +
+        "1. Review and download your Sanction Letter\n" +
+        "2. Visit our nearest branch with original documents\n" +
+        "3. Complete e-NACH registration for EMI deduction\n" +
+        "4. Receive funds within 24-48 hours! 💰\n\n" +
+        "Thank you for choosing Tata Capital. We're honored to be part of your journey! 🙏",
         'agent',
         'sanction',
         { status: 'approved' }
@@ -372,16 +610,24 @@ export const useChatBot = () => {
       
       setStage('sanction_letter');
     }
-  }, [loanApplication, addMessage, switchAgent, simulateTyping]);
+  }, [loanApplication, addMessage, switchAgent, simulateTyping, logOrchestration]);
 
   const startConversation = useCallback(() => {
+    logOrchestration('Session started. Master Agent initialized.');
     addMessage(
-      "👋 Hello! Welcome to Tata Capital's Personal Loan Assistant.\n\nI'm your AI-powered loan advisor, and I'm here to help you get the best personal loan offer tailored just for you.\n\nHow can I assist you today?",
+      "👋 **Welcome to Tata Capital's AI-Powered Loan Assistant!**\n\n" +
+      "I'm your personal loan advisor, powered by our intelligent multi-agent system. I'll guide you through the entire loan process - from understanding your needs to getting your sanction letter.\n\n" +
+      "🤖 Our system uses specialized AI agents:\n" +
+      "• **Sales Agent** - Finds the best offers for you\n" +
+      "• **Verification Agent** - Quick, paperless KYC\n" +
+      "• **Underwriting Agent** - Credit assessment\n" +
+      "• **Sanction Agent** - Generates your loan documents\n\n" +
+      "How can I help you today?",
       'agent',
       'master'
     );
     setStage('greeting');
-  }, [addMessage]);
+  }, [addMessage, logOrchestration]);
 
   return {
     messages,
@@ -391,7 +637,9 @@ export const useChatBot = () => {
     isTyping,
     customer,
     loanApplication,
+    orchestrationLog,
     processUserInput,
-    startConversation
+    startConversation,
+    handleFileUpload
   };
 };
